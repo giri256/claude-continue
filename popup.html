@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="20" height="20" fill="currentColor">
+          <path d="M208.49,120.49a12,12,0,0,1-17,0L140,69V216a12,12,0,0,1-24,0V69L64.49,120.49a12,12,0,0,1-17-17l72-72a12,12,0,0,1,17,0l72,72A12,12,0,0,1,208.49,120.49Z"></path>
+        </svg>
+      </div>
+      <h2>Claude Continue</h2>
+    </div>
+
+    <div class="card" id="status-card">
+      <div class="status-indicator">
+        <div class="dot pulsing"></div>
+        <span id="status-text">Monitoring limit...</span>
+      </div>
+      <div class="time-display" id="time-display" style="display: none;">
+        <div class="label">Auto-Resuming In:</div>
+        <div class="countdown" id="countdown">00:00:00</div>
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
