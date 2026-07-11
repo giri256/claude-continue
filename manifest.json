@@ -1,18 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Claude Continue",
-  "version": "1.0.0",
-  "description": "Automatically resumes Claude chats when your limit resets.",
-  "permissions": ["storage", "alarms", "notifications"],
-  "host_permissions":["*://claude.ai/*"],
+  "version": "4.0.0",
+  "description": "Smart auto-resume for Claude chats with custom prompts, image pasting, and inline notifications.",
+  "permissions": ["storage", "unlimitedStorage", "alarms", "tabs"],
+  "host_permissions": ["*://claude.ai/*"],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Claude Continue Status"
+    "default_title": "Claude Dashboard"
   },
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts":[
+  "content_scripts": [
     {
       "matches": ["*://claude.ai/*"],
       "js": ["content.js"],

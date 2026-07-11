@@ -1,63 +1,107 @@
 let observer = null;
-let countdownInterval = null;
-let targetTimestamp = null;
-
-const PROMPT_TEXT = "continue, exactly from where you have paused, fully research and only then begin to write code";
+let isClickingToolLimit = false;
+let toolLimitInterval = null;
 
 function init() {
-    chrome.storage.local.get(['targetTimestamp'], (data) => {
-        if (data.targetTimestamp) {
-            targetTimestamp = data.targetTimestamp;
-
-            // FIX: Check if the time has ALREADY passed while the PC was off
-            if (Date.now() >= targetTimestamp) {
-                console.log("Claude Continue: Target time passed while offline. Executing now.");
+    chrome.storage.local.get(['targetTimestamp', 'status', 'pendingExecution', 'chatUrl'], (data) => {
+        if (data.pendingExecution && data.chatUrl) {
+            const targetPath = new URL(data.chatUrl).pathname;
+            if (window.location.pathname === targetPath) {
                 executeWhenReady();
-            } else {
-                // Time is still in the future
-                startCountdown();
+                return;
             }
-        } else {
+        }
+
+        if (data.status === 'waiting' && data.targetTimestamp && Date.now() >= data.targetTimestamp) {
+            chrome.runtime.sendMessage({ type: "TRIGGER_EXPIRED" });
+        } else if (!data.status || data.status === 'waiting' || data.status === 'idle') {
             startObserving();
         }
     });
 }
 
-// Safely waits for the DOM to load the chat input before executing
-function executeWhenReady() {
-    // Clear storage immediately so refreshing the page doesn't cause a loop
-    chrome.storage.local.remove(['targetTimestamp']);
-    chrome.runtime.sendMessage({ type: "CLEAR_ALARM" });
-
-    const checkInterval = setInterval(() => {
-        const inputBox = document.querySelector('[data-testid="chat-input"]');
-        // Ensure the box exists and is interactive
-        if (inputBox && inputBox.isContentEditable) {
-            clearInterval(checkInterval);
-            // Brief delay to ensure React has fully hydrated the component
-            setTimeout(executePrompt, 1000);
-        }
-    }, 500);
-}
-
-// Watch DOM for the limit message
 function startObserving() {
     if (observer) observer.disconnect();
 
     observer = new MutationObserver(() => {
+        // 1. Check for tool-use banner
+        detectAndClickToolUseContinue();
+
+        // 2. Check for time limit message
         const timeStr = detectLimitMessage();
         if (timeStr) {
             observer.disconnect();
-            targetTimestamp = parseTimeStr(timeStr);
-
-            chrome.storage.local.set({ targetTimestamp });
+            const targetTimestamp = parseTimeStr(timeStr);
+            chrome.storage.local.set({
+                targetTimestamp: targetTimestamp,
+                chatUrl: window.location.href,
+                status: 'waiting'
+            });
             chrome.runtime.sendMessage({ type: "SET_ALARM", timestamp: targetTimestamp });
-
-            startCountdown();
         }
     });
+
     observer.observe(document.body, { childList: true, subtree: true });
 }
+
+// --- UPDATED: Wait for Main Send Button before clicking Banner Button ---
+function detectAndClickToolUseContinue() {
+    if (isClickingToolLimit) return;
+
+    const banners = document.querySelectorAll('[data-testid="message-warning"]');
+    let foundBanner = false;
+    let continueBtn = null;
+
+    for (const banner of banners) {
+        if (banner.textContent.includes("tool-use limit")) {
+            foundBanner = true;
+            const buttons = banner.querySelectorAll('button');
+            for (const btn of buttons) {
+                if (btn.textContent.trim() === "Continue") {
+                    continueBtn = btn;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    if (foundBanner && continueBtn) {
+        isClickingToolLimit = true;
+        console.log("Claude Continue: Tool limit banner detected. Waiting for MAIN chat button to un-grey...");
+
+        toolLimitInterval = setInterval(() => {
+            // 1. Safety check: Did the banner vanish on its own?
+            if (!document.body.contains(continueBtn)) {
+                clearInterval(toolLimitInterval);
+                isClickingToolLimit = false;
+                return;
+            }
+
+            // 2. The True Source of Truth: The Main Chat Send (Up Arrow) Button
+            const mainSendBtn = document.querySelector('[aria-label="Send message"]');
+
+            if (mainSendBtn) {
+                // Check if the main button is disabled via native prop or React attributes
+                const isMainSendDisabled = mainSendBtn.disabled
+                || mainSendBtn.getAttribute('aria-disabled') === 'true'
+                || mainSendBtn.hasAttribute('data-disabled');
+
+                if (!isMainSendDisabled) {
+                    console.log("Claude Continue: Main Send button is active! Clicking the banner's Continue button.");
+                    clearInterval(toolLimitInterval);
+
+                    // Click the button inside the banner
+                    continueBtn.click();
+
+                    // 2-second cooldown before allowing new banner detection
+                    setTimeout(() => { isClickingToolLimit = false; }, 2000);
+                }
+            }
+        }, 500); // Check every half-second
+    }
+}
+// --------------------------------------------------------
 
 function detectLimitMessage() {
     const elements = document.querySelectorAll('.text-sm');
@@ -74,42 +118,62 @@ function detectLimitMessage() {
 function parseTimeStr(timeStr) {
     const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
     if (!match) return Date.now();
-
-    let hours = parseInt(match[1]);
-    let minutes = parseInt(match[2]);
-    let isPM = match[3].toUpperCase() === 'PM';
-
+    let hours = parseInt(match[1]), minutes = parseInt(match[2]), isPM = match[3].toUpperCase() === 'PM';
     if (isPM && hours < 12) hours += 12;
     if (!isPM && hours === 12) hours = 0;
-
     let targetDate = new Date();
     targetDate.setHours(hours, minutes, 0, 0);
-
-    if (targetDate.getTime() < Date.now()) {
-        targetDate.setDate(targetDate.getDate() + 1);
-    }
+    if (targetDate.getTime() < Date.now()) targetDate.setDate(targetDate.getDate() + 1);
     return targetDate.getTime();
 }
 
-function startCountdown() {
-    if (countdownInterval) clearInterval(countdownInterval);
-
-    countdownInterval = setInterval(() => {
-        if (Date.now() >= targetTimestamp) {
-            clearInterval(countdownInterval);
-            executeWhenReady();
-        }
-    }, 1000);
+function base64ToFile(dataurl, filename) {
+    const arr = dataurl.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) u8arr[n] = bstr.charCodeAt(n);
+    return new File([u8arr], filename, { type: mime });
 }
 
-function executePrompt() {
-    const inputBox = document.querySelector('[data-testid="chat-input"]');
-    if (!inputBox) return;
+function executeWhenReady() {
+    chrome.storage.local.get(['customPrompt', 'customImages'], (data) => {
+        const hasImages = (data.customImages && data.customImages.length > 0);
+        const finalPrompt = (data.customPrompt && data.customPrompt.trim().length > 0)
+        ? data.customPrompt.trim()
+        : (hasImages ? " " : "continue");
 
+        chrome.storage.local.remove(['pendingExecution', 'targetTimestamp', 'confirmTimestamp', 'status', 'chatUrl', 'customPrompt', 'customImages']);
+
+        const checkInterval = setInterval(() => {
+            const inputBox = document.querySelector('[data-testid="chat-input"]');
+            if (inputBox && inputBox.isContentEditable) {
+                clearInterval(checkInterval);
+
+                window.scrollTo(0, document.body.scrollHeight);
+                document.querySelectorAll('.overflow-y-auto').forEach(el => el.scrollTop = el.scrollHeight);
+                inputBox.scrollIntoView({ behavior: "smooth", block: "end" });
+
+                setTimeout(() => executePrompt(inputBox, finalPrompt, data.customImages), 800);
+            }
+        }, 500);
+    });
+}
+
+function executePrompt(inputBox, textToSend, base64Images) {
     inputBox.focus();
 
     const dataTransfer = new DataTransfer();
-    dataTransfer.setData('text/plain', PROMPT_TEXT);
+    dataTransfer.setData('text/plain', textToSend);
+
+    if (base64Images && base64Images.length > 0) {
+        base64Images.forEach((base64, index) => {
+            const file = base64ToFile(base64, `upload_${index}.png`);
+            dataTransfer.items.add(file);
+        });
+    }
+
     const pasteEvent = new ClipboardEvent('paste', {
         clipboardData: dataTransfer,
         bubbles: true,
@@ -117,21 +181,28 @@ function executePrompt() {
     });
     inputBox.dispatchEvent(pasteEvent);
 
-    setTimeout(() => {
+    let retries = 0;
+    const trySend = setInterval(() => {
         const sendBtn = document.querySelector('[aria-label="Send message"]');
+
         if (sendBtn && !sendBtn.disabled) {
+            clearInterval(trySend);
             sendBtn.click();
-        } else {
+            setTimeout(startObserving, 5000);
+        } else if (++retries > 60) {
+            clearInterval(trySend);
             inputBox.dispatchEvent(new Event('input', { bubbles: true }));
             setTimeout(() => {
                 const retryBtn = document.querySelector('[aria-label="Send message"]');
                 if (retryBtn) retryBtn.click();
+                startObserving();
             }, 500);
         }
-
-        // Resume monitoring after a few seconds
-        setTimeout(startObserving, 5000);
-    }, 800);
+    }, 500);
 }
 
 init();
+
+chrome.storage.onChanged.addListener((changes) => {
+    if (changes.pendingExecution && changes.pendingExecution.newValue === true) init();
+});
